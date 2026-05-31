@@ -131,19 +131,13 @@ if not _check_access():
 # ---------------------------------------------------------------- サイドバー
 with st.sidebar:
     st.header("設定")
-    cfg["ocr_engine"] = st.radio(
-        "OCRエンジン（手書き）",
-        ["Gemini 2.5 Flash", "Ollama (qwen3-vl)"],
-        index=0 if cfg.get("ocr_engine", "Gemini 2.5 Flash") == "Gemini 2.5 Flash" else 1,
-    )
+    cfg["ocr_engine"] = "Gemini 2.5 Flash"   # OCRはGemini固定
     # Gemini APIキー：環境変数で設定済みなら入力欄を出さない（DOM/F12漏洩防止）
     if cfg.get("_gemini_from_env"):
         st.success("Gemini APIキー：環境変数で設定済み")
     else:
         cfg["gemini_api_key"] = st.text_input(
-            "Gemini APIキー（Gemini選択時）", value=cfg.get("gemini_api_key", ""), type="password")
-    cfg["vision_model"] = st.text_input(
-        "ビジョンモデル（Ollama選択時）", value=cfg.get("vision_model", core.OCR_VISION_MODEL))
+            "Gemini APIキー", value=cfg.get("gemini_api_key", ""), type="password")
     cfg["gen_model"] = st.text_input(
         "原稿生成モデル（Ollama）", value=cfg.get("gen_model", core.GEN_MODEL_DEFAULT))
     # Ollamaキー：環境変数のみで扱い、UIには一切出さない
@@ -157,8 +151,7 @@ with st.sidebar:
             "Ollamaホスト（空欄=localhost）", value=cfg.get("ollama_host", ""))
 
     # 設定変更の自動保存（※APIキーなど秘密は保存対象から除外）
-    persist = {k: v for k, v in cfg.items()
-               if k in ("ocr_engine", "vision_model", "gen_model")}
+    persist = {k: v for k, v in cfg.items() if k in ("gen_model",)}
     if persist != st.session_state.get("_saved_cfg"):
         save_settings(persist)
         st.session_state["_saved_cfg"] = dict(persist)
@@ -167,7 +160,8 @@ with st.sidebar:
         st.warning("画面キャプチャ貼り付けは streamlit-paste-button 未導入です。"
                    "setup_robot.bat を再実行してください。")
 
-use_ollama = cfg.get("ocr_engine", "").startswith("Ollama")
+use_ollama = False   # OCRはGemini固定（後方互換のため残置）
+
 
 # ============================================================
 # ① アイデアシートを入力
@@ -203,17 +197,16 @@ elif spr is not None and spr.image_data is not None:
 if st.session_state.sheet_img:
     st.image(st.session_state.sheet_img, caption="読み取り対象", width=420)
     if st.button("OCR実行", type="primary"):
-        if not use_ollama and not cfg.get("gemini_api_key"):
-            st.error("Gemini APIキーを設定してください。または OCRエンジンを Ollama に切り替えてください。")
+        if not cfg.get("gemini_api_key"):
+            st.error("Gemini APIキーが設定されていません（環境変数 GEMINI_API_KEY を確認してください）。")
         else:
             with st.spinner("手書き文字を読み取っています…"):
                 try:
                     st.session_state.idea = core.run_ocr(
                         st.session_state.sheet_img,
-                        engine="ollama" if use_ollama else "gemini",
+                        engine="gemini",
                         mime=st.session_state.sheet_mime,
                         gemini_api_key=cfg.get("gemini_api_key"),
-                        vision_model=cfg.get("vision_model", core.OCR_VISION_MODEL),
                         host=cfg.get("ollama_host") or None,
                     )
                     st.success("読み取り完了。元画像を見ながら確認してください。")
