@@ -57,7 +57,10 @@ def load_settings():
             save_settings(cfg)
         except Exception:
             pass
-    # 環境変数があれば最優先で上書き（Vercel/Streamlit Cloud等のシークレット運用）
+    # 環境変数があれば最優先で上書き（クラウドのSecrets運用）。
+    # 環境変数由来のキーは UI に出さない（DOM/F12漏洩を防ぐ）ためフラグで記録。
+    cfg["_gemini_from_env"] = bool(os.environ.get("GEMINI_API_KEY"))
+    cfg["_ollama_key_from_env"] = bool(os.environ.get("OLLAMA_API_KEY"))
     if os.environ.get("GEMINI_API_KEY"):
         cfg["gemini_api_key"] = os.environ["GEMINI_API_KEY"]
     if os.environ.get("OLLAMA_HOST"):
@@ -69,7 +72,8 @@ def save_settings(s):
     conn = _db()
     conn.executemany("INSERT INTO settings(key, value) VALUES(?, ?) "
                      "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                     [(k, "" if v is None else str(v)) for k, v in s.items()])
+                     [(k, "" if v is None else str(v)) for k, v in s.items()
+                      if not k.startswith("_")])
     conn.commit()
     conn.close()
 
@@ -100,6 +104,30 @@ st.session_state.setdefault("draft_text", [])      # ベータ版PPTのテキス
 st.title("ロボット甲子園 プレゼン作成")
 st.caption("アイデアシートを読み取り → 画像を見ながら修正 → 白表紙のPowerPointに出力")
 
+
+# ---------------------------------------------------------------- アクセス制限（パスワード）
+def _check_access():
+    """APP_PASSWORD が設定されていれば、一致するまでアプリ本体を表示しない。
+    公開URLの第三者による無断利用（API課金の浪費）を防ぐ。"""
+    expected = os.environ.get("APP_PASSWORD")
+    if not expected:
+        return True  # 未設定なら制限なし（ローカル等）
+    if st.session_state.get("_authed"):
+        return True
+    st.info("このアプリは関係者用です。合言葉を入力してください。")
+    pw = st.text_input("合言葉", type="password", key="_pw")
+    if pw:
+        if pw == expected:
+            st.session_state["_authed"] = True
+            st.rerun()
+        else:
+            st.error("合言葉が違います。")
+    return False
+
+
+if not _check_access():
+    st.stop()
+
 # ---------------------------------------------------------------- サイドバー
 with st.sidebar:
     st.header("設定")
@@ -108,20 +136,32 @@ with st.sidebar:
         ["Gemini 2.5 Flash", "Ollama (qwen3-vl)"],
         index=0 if cfg.get("ocr_engine", "Gemini 2.5 Flash") == "Gemini 2.5 Flash" else 1,
     )
-    cfg["gemini_api_key"] = st.text_input(
-        "Gemini APIキー（Gemini選択時）", value=cfg.get("gemini_api_key", ""), type="password")
+    # Gemini APIキー：環境変数で設定済みなら入力欄を出さない（DOM/F12漏洩防止）
+    if cfg.get("_gemini_from_env"):
+        st.success("Gemini APIキー：環境変数で設定済み")
+    else:
+        cfg["gemini_api_key"] = st.text_input(
+            "Gemini APIキー（Gemini選択時）", value=cfg.get("gemini_api_key", ""), type="password")
     cfg["vision_model"] = st.text_input(
         "ビジョンモデル（Ollama選択時）", value=cfg.get("vision_model", core.OCR_VISION_MODEL))
     cfg["gen_model"] = st.text_input(
         "原稿生成モデル（Ollama）", value=cfg.get("gen_model", core.GEN_MODEL_DEFAULT))
-    cfg["ollama_host"] = st.text_input(
-        "Ollamaホスト（空欄=localhost）", value=cfg.get("ollama_host", ""))
+    # Ollamaキー：環境変数のみで扱い、UIには一切出さない
+    if cfg.get("_ollama_key_from_env"):
+        st.success("Ollama APIキー：環境変数で設定済み")
+    # Ollamaホスト：環境変数で設定済みなら表示のみ
+    if os.environ.get("OLLAMA_HOST"):
+        st.caption(f"Ollamaホスト：{cfg.get('ollama_host')}（環境変数）")
+    else:
+        cfg["ollama_host"] = st.text_input(
+            "Ollamaホスト（空欄=localhost）", value=cfg.get("ollama_host", ""))
 
-    # 入力が変わったら settings.db に自動保存（次回起動時に復元）
-    if cfg != st.session_state.get("_saved_cfg"):
-        save_settings(cfg)
-        st.session_state["_saved_cfg"] = dict(cfg)
-    st.caption("APIキー・設定は settings.db に自動保存されます（このPC内）")
+    # 設定変更の自動保存（※APIキーなど秘密は保存対象から除外）
+    persist = {k: v for k, v in cfg.items()
+               if k in ("ocr_engine", "vision_model", "gen_model")}
+    if persist != st.session_state.get("_saved_cfg"):
+        save_settings(persist)
+        st.session_state["_saved_cfg"] = dict(persist)
 
     if not HAS_PASTE:
         st.warning("画面キャプチャ貼り付けは streamlit-paste-button 未導入です。"
