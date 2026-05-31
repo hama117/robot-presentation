@@ -1,0 +1,9 @@
+venv/
+__pycache__/
+*.pyc
+settings.db
+robot_settings.json
+.streamlit/secrets.toml
+.env
+robot_presentation.pptx
+*_demo.pptx
